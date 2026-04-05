@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -53,7 +54,8 @@ func (s *Server) setupMiddlewares() {
 	s.app.Use(logger.New())
 	s.app.Use(cors.New(cors.Config{
 		AllowOrigins: strings.Split(s.allowOrigins, ","),
-		AllowMethods: []string{"GET", "POST", "OPTIONS"},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowHeaders: []string{"Content-Type"},
 	}))
 }
 
