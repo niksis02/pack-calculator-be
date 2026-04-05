@@ -1,0 +1,91 @@
+name: Backend Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  GO_VERSION: "1.26"
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  ECR_REPOSITORY: pack-calculator/backend
+  ECS_SERVICE: pack-calculator-backend-service
+  ECS_CLUSTER: pack-calculator
+  CONTAINER_NAME: pack-calculator-backend
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      - name: Download dependencies
+        run: make tidy
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+  docker-deploy:
+    name: Docker Build & Deploy to ECS
+    runs-on: ubuntu-latest
+    needs: build-test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Docker build & push to ECR
+        id: build-image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          FULL_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          make docker-build IMAGE="$FULL_IMAGE"
+          docker tag "$FULL_IMAGE" $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push "$FULL_IMAGE"
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Download current ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $CONTAINER_NAME \
+            --query taskDefinition > task-definition.json
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+          environment-variables: |
+            PORT=${{ secrets.PORT }}
+            ALLOW_ORIGINS=${{ secrets.ALLOW_ORIGINS }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
